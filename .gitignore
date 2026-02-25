@@ -1,0 +1,6 @@
+apicache/
+__pycache__/
+cmds
+state.json
+temp
+throttle.ctrl
