@@ -15,6 +15,12 @@ import clicore
 import json
 import mwparserfromhell
 import pyperclip
+import webbrowser
+import tempfile
+import html
+import urllib.parse
+
+DEBUGGER_ADDRESS = "127.0.0.1:9222"
 
 parser = clicore.Parser()
 
@@ -316,79 +322,86 @@ def cmd_prepend_wpbd(ctx):
 
 # Commands Specific to the task of adding the dmy/mdy tags
 def extract_dates(wikitext: str):
-    """
-    Extract dates in the formats:
-      1) NUM MONTHNAME [,] YEAR  -> DMY
-      2) MONTHNAME NUM [,] YEAR  -> MDY
+	"""
+	Extract dates in the formats:
+	  1) NUM MONTHNAME [,] YEAR  -> DMY
+	  2) MONTHNAME NUM [,] YEAR  -> MDY
 
-    Ignores any dates inside <ref>...</ref> tags.
+	Ignores any dates inside <ref>...</ref> tags.
 
-    Returns list of dicts with:
-        - text
-        - is_dmy
-        - text_toggled
-        - datetime
-    """
+	Returns list of dicts with:
+		- text
+		- is_dmy
+		- text_toggled
+		- datetime
+	"""
 
-    # Remove all <ref>...</ref> contents to ignore them
-    text = re.sub(r"<ref[^>]*>.*?</ref>", "", wikitext, flags=re.DOTALL|re.IGNORECASE)
+	# Remove all <ref>...</ref> contents to ignore them
+	text = re.sub(r"<ref[^>]*>.*?</ref>", "", wikitext, flags=re.DOTALL|re.IGNORECASE)
 
-    month_names = [
-        "January", "February", "March", "April", "May", "June",
-        "July", "August", "September", "October", "November", "December"
-    ]
-    months_regex = "|".join(month_names)
-    month_to_number = {m: i + 1 for i, m in enumerate(month_names)}
+	month_names = [
+		"January", "February", "March", "April", "May", "June",
+		"July", "August", "September", "October", "November", "December"
+	]
+	months_regex = "|".join(month_names)
+	month_to_number = {m: i + 1 for i, m in enumerate(month_names)}
 
-    pattern = re.compile(
-        rf"""\b(
-            (?P<d1>\d{{1,2}})\s+(?P<m1>{months_regex})\s*(?P<c1>,?)\s*(?P<y1>\d{{4}})
-            |
-            (?P<m2>{months_regex})\s+(?P<d2>\d{{1,2}})\s*(?P<c2>,?)\s*(?P<y2>\d{{4}})
-        )\b""",
-        re.VERBOSE
-    )
+	pattern = re.compile(
+		rf"""\b(
+			(?P<d1>\d{{1,2}})\s+(?P<m1>{months_regex})\s*(?P<c1>,?)\s*(?P<y1>\d{{4}})
+			|
+			(?P<m2>{months_regex})\s+(?P<d2>\d{{1,2}})\s*(?P<c2>,?)\s*(?P<y2>\d{{4}})
+		)\b""",
+		re.VERBOSE
+	)
 
-    results = []
+	results = []
 
-    for match in pattern.finditer(text):
-        if match.group("d1"):  # DMY
-            day = int(match.group("d1"))
-            month = match.group("m1")
-            year = int(match.group("y1"))
-            comma = match.group("c1")
-            is_dmy = True
-        else:  # MDY
-            day = int(match.group("d2"))
-            month = match.group("m2")
-            year = int(match.group("y2"))
-            comma = match.group("c2")
-            is_dmy = False
+	for match in pattern.finditer(text):
+		if match.group("d1"):  # DMY
+			day = int(match.group("d1"))
+			month = match.group("m1")
+			year = int(match.group("y1"))
+			comma = match.group("c1")
+			is_dmy = True
+		else:  # MDY
+			day = int(match.group("d2"))
+			month = match.group("m2")
+			year = int(match.group("y2"))
+			comma = match.group("c2")
+			is_dmy = False
 
-        month_num = month_to_number[month]
-        dt = datetime(year, month_num, day).date()
+		month_num = month_to_number[month]
+		dt = datetime(year, month_num, day).date()
 
-        # Preserve comma presence when toggling
-        comma_part = "," if comma else ""
-        if is_dmy:
-            toggled = f"{month} {day}{comma_part} {year}"
-        else:
-            toggled = f"{day} {month}{comma_part} {year}"
+		# Preserve comma presence when toggling
+		comma_part = "," if comma else ""
+		if is_dmy:
+			toggled = f"{month} {day}{comma_part} {year}"
+		else:
+			toggled = f"{day} {month}{comma_part} {year}"
 
-        results.append({
-            "text": match.group(0),
-            "is_dmy": is_dmy,
-            "text_toggled": toggled,
-            "datetime": dt
-        })
+		results.append({
+			"text": match.group(0),
+			"is_dmy": is_dmy,
+			"text_toggled": toggled,
+			"datetime": dt
+		})
 
-    return results
+	return results
 
 @parser.command(name="extractdates", aliases = ["ed"])
 def cmd_extract_dates(ctx, page : MaybeVariableConverter):
 	page = get_page_from_url(page)
 	for j in extract_dates(page.text):
 		print(j)
+
+class ND_ERRORS:
+	CANNOT_FIND_PAGE = 1
+	NON_MAINSPACE = 2
+	TEMPLATE_PRESENT = 3
+	NO_DATE_PRESENT = 4
+
 
 @parser.add_flag(name = "onlymainspace", default = False)
 @parser.add_flag(name = 'checkout', default = False)
@@ -409,7 +422,7 @@ def cmd_normalize_dates(ctx, url: MaybeVariableConverter):
 
 	if not page.exists():
 		print(f"Cannot find page - {page.title()}")
-		return
+		return ND_ERRORS.CANNOT_FIND_PAGE
 
 	print(f"Title : {page.title()}")
 	print(f"URL : {page.full_url()}")
@@ -417,7 +430,7 @@ def cmd_normalize_dates(ctx, url: MaybeVariableConverter):
 
 	if ctx.flags.onlymainspace and ":" in page.title().split()[0]:
 		print(f"{bcolors.FAIL}Skipping non mainspace article.{bcolors.ENDC}")
-		return
+		return ND_ERRORS.NON_MAINSPACE
 
 	# ---- Detect ehttps://en.wikipedia.org/wiki/Wikipedia:Manual_of_Style/Dates_and_numbersxisting date templates (robust variation handling) ----
 	date_template_pattern = re.compile(
@@ -430,7 +443,7 @@ def cmd_normalize_dates(ctx, url: MaybeVariableConverter):
 	match = date_template_pattern.search(text)
 	if match:
 		print(f"{bcolors.FAIL}Date template already present: {match.group(1)}{bcolors.ENDC}")
-		return
+		return ND_ERRORS.TEMPLATE_PRESENT
 
 	# ---- Extract dates ----
 	dates = extract_dates(text)
@@ -478,7 +491,7 @@ def cmd_normalize_dates(ctx, url: MaybeVariableConverter):
 	else:
 		if not ctx.flags.force:
 			print(f"{bcolors.FAIL}Article has no detectable dates. Terminating.{bcolors.ENDC}")
-			return
+			return ND_ERRORS.NO_DATE_PRESENT
 		else:
 			print(f"{bcolors.WARNING}Article has no detectable dates, but continuing because force flag is set.{bcolors.ENDC}")
 
@@ -512,6 +525,7 @@ def cmd_normalize_dates(ctx, url: MaybeVariableConverter):
 	elif insert_line > len(lines):
 		insert_line = len(lines)
 
+	old_lines = lines.copy()
 	lines.insert(insert_line, template.rstrip("\n"))
 	final_text = "\n".join(lines)
 
@@ -523,29 +537,118 @@ def cmd_normalize_dates(ctx, url: MaybeVariableConverter):
 	if ctx.flags.checkout:
 		parser.get_command('checkout').invoke(ctx)
 
+	return {
+		"title" : page.title(),
+		"url" : page.full_url(),
+		"dmy" : dmy_count,
+		"mdy" : mdy_count,
+		"first_lines" : old_lines[:5]
+	}
+
+@parser.add_flag(name = 'delay', type = float, default = 0)
+@parser.command(name="bulk_page_template_check", aliases = ["bptc"])
+def cmd_bulk_page_template_check(ctx):
+	parser.parse("cco", [])
+	hold = True
+	for title, url in sorted(list(wpbd.items())):
+		last = state.get("bulk_date_last")
+		if (title == last or not last):
+			hold = False
+
+		if hold:
+			continue
+
+		with open('wpbd_date.json', 'r') as f:
+			data = json.load(f)
+
+		print(title, url)
+		output = parser.parse("nd", [url, "--onlymainspace"])
+		data[title] = output
+		state["bulk_date_last"] = title
+		with open('wpbd_date.json', 'w') as f:
+			json.dump(data, f, indent= 4)
+
+		with open("state.json", 'w') as f:
+			json.dump(state, f, indent = 4)
+
+		parser.parse("cco", [])
+		time.sleep(ctx.flags.delay)
+
+
+@parser.command(name = "bulk_page_template_add", aliases = ["bpta"])
+def cmd_bulk_page_template_add(ctx):
+	with open("wpbd_date.json", 'r') as f:
+		data = json.load(f)
+
+	parser.parse("cco", [])
+	hold = True
+	for title, packet in sorted(list(data.items())):
+
+		last = state.get("bulk_date_edit_last")
+		if (title == last or not last):
+			hold = False
+
+		if hold:
+			continue
+
+		if (type(packet) == int):
+			print(f"Skipping {title}")
+			continue
+
+		parser.parse("nd", [packet['url'], "--checkout", "--takelineprompt"])
+		state["bulk_date_edit_last"] = title
+		with open("state.json", 'w') as f:
+			json.dump(state, f , indent= 4)
+
+
+@parser.command(name = "bulk_page_template_report", aliases = ["bptr"])
+def cmd_bulk_page_template_report(ctx):
+	with open("wpbd_date.json", 'r') as f:
+		data = json.load(f)
+
+	total = 0
+	ok = 0
+	for (key, value) in data.items():
+		if type(value) == int:
+			ok += 1
+		total += 1
+
+	print(f"Total {total}, OK {ok}")
+
+@parser.add_flag(name="nologin", value=False)
 @parser.command(name="checkout", aliases=["co"])
 def cmd_checkout(ctx):
-	if not state.get('checkout'):
-		print("No checkout to apply.")
-		return
+    if not state.get('checkout'):
+        print("No checkout to apply.")
+        return
 
-	page_url, new_text, summary = state['checkout']
-	page = get_page_from_url(page_url)
+    page_url, new_text, summary = state['checkout']
+    page = get_page_from_url(page_url)
 
-	if not page.exists():
-		print(f"Cannot find page - {page_url}")
-		state['checkout'] = None
-		return
+    if not page.exists():
+        print(f"Cannot find page - {page_url}")
+        state['checkout'] = None
+        return
 
-	site.login()  # Login for checkout
-	
-	# Save the new text to the page
-	page.text = new_text
-	page.save(summary=summary)
+    # Copy new text to clipboard
+    pyperclip.copy(new_text)
 
-	# Clear checkout
-	state['checkout'] = None
-	print(f"Changes applied to {page.full_url()} and checkout cleared.")
+    # Build edit URL (source editor) with summary prefilled
+    base = "https://en.wikipedia.org/w/index.php"
+    params = {
+        "title": page.title(),
+        "action": "edit",
+        "summary": summary
+    }
+
+    edit_url = base + "?" + urllib.parse.urlencode(params)
+
+    # Open edit page in new tab
+    webbrowser.open_new_tab(edit_url)
+
+    state['checkout'] = None
+    print("Edit page opened. New text copied to clipboard. Paste and submit manually.")
+
 
 @parser.command(name= "clearcheckout", aliases = ["cco"])
 def cmd_clear_checkout(ctx):

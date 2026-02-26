@@ -4,3 +4,7 @@ cmds
 state.json
 temp
 throttle.ctrl
+user-config.py
+user-password.cfg
+pywikibot-*
+wpbd_date.json
